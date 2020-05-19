@@ -1,0 +1,208 @@
+---
+title: "Data Science Pipeline Tutorial - Analyzing the COVID-19 epidemic"
+author: "Chris Koenig"
+date: "5/15/2020"
+output:
+  html_document:
+    df_print: paged
+---
+
+$\textbf{Introduction}$
+
+The goal of this tutorial is to teach you the general data science process for data analysis. This process includes data curation, parsing, and management; exploratory data analysis; hypothesis testing and machine learning to provide analysis; and drawing a conclusion from this process. This tutorial will be analyzing the COVID-19 epidemic, but the steps shown can be generalized to any topic that suits your interests.
+
+$\textbf{Getting started}$
+
+For this tutorial we will be using the R language in the R studio IDE. Since this tutorial aims to cover the data science process generally, I will not be going into detail on coding in R. Instead I will provide links to beginner R programing guides in case you are unfamiliar. The download links/tutorials can be found below:
+
+  1. https://www.r-project.org/
+
+  2. https://rstudio.com/products/rstudio/
+
+  3. https://cran.r-project.org/doc/contrib/Owen-TheRGuide.pdf
+
+
+$\textbf{Data Curation}$
+
+The first step in the data science pipeline is obtaining the data you want to analyze. Assuming you aren’t making the data yourself there are two main ways to do this. The easiest method of obtaining usable data is finding your data in an already usable format (such as .csv) online. There are several sites dedicated to hosting data sets in usable formats which I will link below but don’t feel that your search is limited to these sites. 
+
+If your data exists online but is not in an easily usable format, then your first step will be data scraping. Data scraping refers to parsing websites in order to extract the info you want into a useable format for your analysis. I won’t go into detail on this process as the COVID data set I’m using is obtained in an already usable format, but for those interested here is a link for more reading (https://towardsdatascience.com/tidy-web-scraping-in-r-tutorial-and-resources-ac9f72b4fe47)
+Once you’ve found a csv file you first need to download it to your computer. The files I will be using to analyze U.S states Covid-19 data can be found here:
+
+1. https://covidtracking.com/api
+
+2. https://github.com/jasonong/List-of-US-States/blob/master/states.csv
+
+3. https://www.kaggle.com/lucasvictor/us-state-populations-2018
+
+Once the file is saved, we can begin coding. The first step is to import all the necessary libraries that we will be using.
+```{r setup, include=TRUE,message=FALSE}
+library(tidyverse)
+library(dplyr)
+library(broom)
+knitr::opts_chunk$set(echo = TRUE)
+```
+Now that you have access to all the functions you will need, we can load the csv file into R for use. To do this you will load the data into a variable called covid_data using the tidyverse function read_csv(). This function takes the path of the csv file as its argument and will load the data in as a data frame object. A data frame is just an object that represents a table of entities and attributes (rows and columns) that can be easily manipulated in R. To be able to view the data we simply call covid_data at the end of our code to display the contents of the variable. I use the head() function to abbreviate the table.
+```{r data, message=FALSE}
+
+covid_data <- read_csv("C:\\Users\\Chris\\Documents\\daily.csv")
+
+population_data <- read_csv("C:\\Users\\Chris\\Documents\\State-Populations.csv")
+
+abbreviation_data <- read_csv("C:\\Users\\Chris\\Documents\\state-abbreviations.csv")
+
+state_abbreviations <- full_join(abbreviation_data,population_data)
+
+new_covid_data <-
+  full_join(covid_data, state_abbreviations, by = c("state" = "Abbreviation"))
+
+head(new_covid_data)
+```
+$\textbf{Cleaning Data}$
+
+Sometimes the data you’ve obtained will not be “Tidy” and you will have to transform the data to make it more usable. The basic properties of tidy data are 
+
+1.	Each attribute (or variable) forms a column
+
+2.	Each entity (or observation) forms a row
+
+3.	Each type of entity (observational unit) forms a table
+
+In our COVID-19 dataset rows can represents states or they can represent provinces/territories. Since I want states to be the only type of entity in my table, I will drop any rows that don’t represent states. To do this I drop any entries that have a fips value higher than 59 since that indicates non-states. We also want to change the types of any attributes that are incorrect. In our example the date attribute is a string and as such it is hard to graph it as a continuous variable for data analysis. To fix this we would need to convert the date to a datetime object in R. Fortunately this step is already taken care of with the inclusion of the dateChecked column which I will rename to date for simplicity. If you want to learn about handling dates in R check this link (https://www.displayr.com/r-date-conversion/)
+
+```{r cleaning}
+trimmed_data <- new_covid_data %>%
+  filter(fips < 60) %>%
+  mutate(date = dateChecked) %>%
+  select(-c(dateChecked,pending,hospitalizedCurrently,dataQualityGrade,hospitalized,hospitalizedCumulative,inIcuCumulative,lastUpdateEt,hash,total,posNeg,fips,State))
+head(trimmed_data)
+```
+Looking at the data frame we can see that some entries are labeled NA which is a place holder for missing data. Missing data can create problems when analyzing data and therefore it needs to be handled. How you handle missing data depends on why the data is missing in the first place. If the data is missing completely at random and it’s a small portion of your data, it is safe to simply drop the entries that are missing. If the data is not missing at complete random it becomes more complicated since dropping entries can influence the trends in your data. If you want to learn more about handling missing data that isn’t random you can read chapter 10 of this book (https://www.wiley.com/en-us/Statistical+Data+Cleaning+with+Applications+in+R-p-9781118897157). 
+In the case of my COVID-19 dataset there are many missing values with some missing seemingly randomly and some not. One Attribute I’m interested in analyzing that contains missing values is the Negative test results column. I noticed that when Negative entry for a state was NA that the total tests attribute was equal to the positive tests attribute. This means that these NAs are not random and simply indicate that the state did not report any negative test results. Therefore, I can safely convert all NAs in the negative column to zero without effecting the trends in my data. In a similar vein the deaths attribute contains a few NAs for states that had low numbers of positive cases meaning they weren’t reporting on deaths due to COVID-19 at all. Although I could change this number to zero, it could be inaccurate since there is no way to know what this value is supposed to be unlike in the case of the negative attribute. To handle this, I will create a new categorical attribute called missing_deaths that will indicate if a row is missing a deaths value so I can ignore it in my analysis. In the case of attributes like hospitalized there are many NAs but not at random and there is no feasible way to handle these. Replacing NAs with an average value (imputation) for the attribute would not be even close to accurate and dropping all the NAs is not an option since they represent so much of the data and aren’t random. As a result, “hospitalized” is not usable for analysis when considering all the states and I will drop the whole column from the table. This reasoning applies to several columns which I drop but I also drop some columns that are providing repeat data. Some columns are “deprecated” which means they are included in the data set but have been deemed useless by the creator of the dataset for some reason which means I will remove them as well. 
+```{r handlingMissing}
+fixed_data <- trimmed_data %>%
+  select(-c(inIcuCurrently,onVentilatorCumulative,onVentilatorCurrently,recovered)) %>%
+  replace_na(list(negative = 0)) %>%
+  mutate(missing_deaths = ifelse(is.na(death),1,0))
+head(fixed_data)
+```
+With this process complete we are left with Tidy data that contains only the attributes and entities we are interested in and we can continue onto our analysis.
+
+$\textbf{Exploratory Data Analysis}$
+
+Now that we have obtained and cleaned our data we can begin exploratory data analysis. The purpose of this analysis is to better understand the data and help us decide if we need to transform our data. We also perform this analysis to identify trends and relationships in the data that we can analyze further with machine learning methods.
+When analyzing data we want to identify properties of variables such as
+
+•	Central tendency
+
+•	Spread
+
+•	Skew
+
+•	Outliers
+
+The best way to do this is to visualize the data using a graph. If we wanted to identify these properties for a single variable, we can use a box plot or a violin plot. Both plots show the central tendency, spread, skew, and outliers of a variable. As an example, I plot a box plot of number of positive cases in the U.S.
+
+```{r singleVar}
+fixed_data %>%
+  ggplot(aes(x = '', y = positive)) + 
+  geom_boxplot()
+```
+
+As you can see there are many major outliers represented by the dots and 75% of the data is squished into the bottom of the graph. Obviously, it is very hard to observe anything useful from this graph so if we want to analyze positive tests results we should think about analyzing its relation to a separate attribute in the dataset. For example, I will create a scatter plot with number of positives on the y axis and date on the x axis.
+```{r doubleVar}
+fixed_data %>%
+  ggplot(aes(x = date, y = positive)) + 
+  geom_point()+
+    labs(x="Date", y="Number of Postive Cases")
+```
+
+Looking at this graph we can observe that there seems to be several distinct trends in the data which indicates that there is likely some sort of categorical attribute that affects the positive variable. We also see that nothing of interest happens before march so we can improve our analysis by accounting for these observations. adjusting the scale of the date axis to begin after March will allow us to see the trends better and coloring points based on state will allow us to see if the state variable is what’s responsible for the different trends. 
+```{r improvedVis}
+subset_data <- fixed_data %>%
+  filter(date > as.POSIXct('2020-03-01'))
+subset_data %>%
+  ggplot(aes(x = date, y = positive, color = factor(state))) +
+  geom_point()+
+    labs(x="Date", y="Number of Postive Cases")
+
+```
+
+Now we can see that the categorical variable state does seem to be the cause of these distinct trends. Looking at this data we can see that highly populated states like New York and New Jersey are showing the highest rates of positive cases and we can guess that population might be affecting the difference in rates we are seeing between states. we can try to visualize this by computing summary statistics. As an example i will graph mean positive case increase rate vs population.
+```{r summaryStatistics}
+subset_data <- fixed_data %>%
+  filter(date > as.POSIXct('2020-03-01'), !is.na(positiveIncrease)) %>%
+  group_by(state) %>%
+  mutate(avg = mean(positiveIncrease))
+subset_data %>%
+  ggplot(aes(x = `2018 Population`, y = avg, color = factor(state))) +
+  geom_point()+
+    labs(x="State Population", y="Average",title = "Average Rate of New COVID-19 Cases VS State Population")
+
+```
+
+This shows us that population is not the only factor in infection rate but it is correlated.
+
+$\textbf{Transforming Data}$
+
+The most common kind of transformation performed on data is scaling that data to a common unitless value. This can be useful for many applications where you are comparing data with different units. For example, when comparing the wealth of the worlds wealthiest people over the years it would not be fair to compare 10,000 dollars in the 1950’s to 10,000 dollars in today’s money since they no longer hold the same value. By scaling currency to the same unit, you will be able to accurately portray how much 10,000 dollars used to be worth in todays currency. If you want to scale a variable to become “unitless” you essentially want to change its unit to become standard deviations away from that variables average value. To do this you apply this transformation to every value Xi to get Zi:
+
+$z_{i}=(x_{i}−\overline{x})sd(x)$
+
+For our data transformation I am interested in scaling positive results to a more comparable value.Im not interested in unitless value but instead want to scale every value by its corresponding states total population. This will give me a new variable that represents the proportion of the states population that has tested positive. This ratio will give us a better perspective of the amount infected for each state as opposed to a raw number.
+```{r moreImproved}
+trans_data <- fixed_data %>%
+  filter(date > as.POSIXct('2020-03-01')) %>%
+  #data transformation
+  mutate(infection_percent = 100*(positive / `2018 Population`))
+trans_data %>%
+  ggplot(aes(x = date, y = infection_percent, color = factor(state))) +
+  geom_line() +
+    labs(x="Date", y="Percent of People Infected")
+```
+
+As we can see even with population accounted for NY and NJ far exceed other states in positive case ratio so total population is likely not a strong indicator. 
+
+$\textbf{Hypothesis Testing and Machine Learning}$
+
+Once you’ve analyzed your data and found something you would like to study you can begin hypothesis testing. The idea behind hypothesis testing is you create a hypothesis about a parameter of interest and then you use probability under that hypothesis to see how consistent your data is with that hypothesis. Put simply you will use probability statistics to determine if your hypothesis is likely to be true.
+The best way to learn this process is by example. Say I want to prove that there is a relationship between the percent infected and date. To prove this I would want to show that the chance of there being no relationship is very low which implies that there is a relationship. This is called rejecting the null hypothesis.
+
+	Null Hypothesis: there is no relationship between percent infected and date
+	
+	Alternative Hypothesis (what we want to prove): there is a relationship between percent infected and date
+	
+To reject the null hypothesis, we will use a simple machine learning algorithm called linear regression. Linear regression is an algorithm that estimates the coefficients in the relationship between two or more variables. Assume we have a variable Y and another variable X then their relationship defined by a linear function is:
+
+$Y=β_0+β_1X$ 
+
+Linear regression estimates $B_0$ and $B_1$ and even provides a statistical analysis of how likely those values are to be correct. This measure of likelihood is called the P value and it represents the probability that those coefficients were found under the hypothesis that there is no relationship between the variables. In other words, if we find a P value that is low enough to satisfy our standards then we can reject the null hypothesis. .05 is a common threshold that is used to test the P value. P value < .05 indicates a statistically significant relationship. While I could talk about the origin of the P value and the details of linear regression it goes a bit beyond the scope of a simple tutorial. If you’re interested, you can visit this link to read more(link).
+Now that you have some understanding of hypothesis testing take a look at our example hypothesis:
+
+Null Hypothesis: there is no relationship between infection percent and date
+
+Alternative Hypothesis: there is a relationship between infection percent and date
+
+Now that we have a null hypothesis, we want to reject I simply create a linear regression model between infection percent and date and display the estimated coefficients and P value.
+```{r hypothesis}
+model <- lm(infection_percent ~ date,data = trans_data)
+ tidy(model)
+```
+As you can see, we have an estimate for $B_1$ that states that on average the percent infected increases by 7.154543e-08 for every unit of date that passes. This estimate has a P value of 1.966589e-254 which is far below the .05 necessary to reject the null. Therefore, we can say that there is a statistically significant relationship between the number of deaths and the number of positive cases.
+
+The last step in this process is to check if a linear relationship is a good approximation. We can do this by plotting a residuals vs fitted graph in order to check that the residuals are independent and identically distributed.
+```{r validity}
+augmented <- model %>%
+  augment()
+augmented %>%
+  ggplot(aes(x=.fitted,y=.resid)) +
+    geom_point() + 
+    geom_smooth() +
+    labs(x="fitted", y="residual")
+```
+
+This graph shows us that the average of the residuals is almost constantly zero which is good and is an indication of a linear relationship. The problem is that the graph also shows that the distribution of the residuals is not identical. On the right side of the graph the distribution gets larger and larger which violates the properties of a linear relationship. This is to be expected as biological processes are not usually linear so keep in mind that linear regression does not work for analyzing all relationships. In the case of a non linear relationship you would want to use a different machine learning technique such as tree based methods which you can read about here (https://www.analyticsvidhya.com/blog/2016/04/tree-based-algorithms-complete-tutorial-scratch-in-python/)
+
+$\textbf{Conclusion}$
+
+Although our analysis did not turn out to be valid in the end it does not mean we didn’t glean any useful information. We found out that COVID-19 is spreading at a nonlinear rate and that linear models cannot be used to predict future case numbers. We also were able to identify trends in the data through data visualization revealing that state population wasn’t strongly correlated with infection rate. 
